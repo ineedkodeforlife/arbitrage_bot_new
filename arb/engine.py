@@ -28,6 +28,7 @@ from .match import WEAK_SCORE, flip_key, match_events
 from .model import Event, PmSel
 
 HIDDEN_FILE = "hidden.json"    # что скрыто кнопками на странице
+BETS_FILE = "bets.json"         # сохранённые ставки (учёт)
 HIDDEN_KEEP = 3 * 86400         # скрытые матчи забываются через три дня
 GRACE = 2.0             # вилка, пропавшая меньше чем на столько секунд, считается той же
 PREMATCH_PAST = 900     # сколько секунд после времени начала ещё верить прематч-линии
@@ -56,8 +57,14 @@ class Engine:
         self.min_profit = args.min_profit / 100.0
         self.max_profit = args.max_profit / 100.0 if args.max_profit else None
         self.hold = max(args.hold, 0.0) if args.watch else 0.0
-        self.hidden = {"match": {}, "sport": {}, "market": {}}     # значение -> подпись
+        # значение -> (подпись, когда). "pin" — закреплённые связки: они видны на
+        # странице, даже когда вилки по ним нет.
+        self.hidden = {"match": {}, "sport": {}, "market": {}, "pin": {}}
         self._load_hidden()
+        self.pin_last: dict = {}        # последняя известная карточка закреплённой связки
+        self.bets: list = []
+        self._load_bets()
+        self.sports: dict = {}          # вид спорта -> сколько матчей сопоставлено
         self.lock = threading.RLock()
         modes = {"all": (False, True), "live": (True,), "prematch": (False,)}[args.mode]
         self.feeds = [bcgame.Feed(live, self._bc_changed) for live in modes]
@@ -199,6 +206,10 @@ class Engine:
                         c.episode = None
             self.cands, self.by_bc, self.by_tok = cands, by_bc, by_tok
             self.matched, self.unmatched = len(matches), unmatched
+            sports: dict = {}
+            for bc, _, _, _ in matches:
+                sports[bc.sport] = sports.get(bc.sport, 0) + 1
+            self.sports = sports
         new = [t for t in by_tok if not self.books.known(t)]
         if new:
             self.books.load(new)
@@ -357,6 +368,22 @@ class Engine:
                 return (not (ep and ep["announced"]), bool(c.bc and c.bc.live), -c.arb.profit)
             arbs = sorted(self.arbs.values(), key=order)
             arbs = [view.to_dict(c, bank, self.books.asks(c.sel.token)) for c in arbs]
+            shown = {a["id"] for a in arbs if a}
+            pinned = []
+            for ident in self.hidden["pin"]:
+                if ident in shown:
+                    continue
+                bc_id, _, token = ident.partition("|")
+                c = self.cands.get((bc_id, token))
+                d = view.to_dict(c, bank, self.books.asks(token)) if c else None
+                if d:
+                    self.pin_last[ident] = d
+                else:                   # матч закончился или рынок закрыт
+                    d = self.pin_last.get(ident)
+                    if d:
+                        d = {**d, "stale": True}
+                if d:
+                    pinned.append(d)
             rest = []
             if near:
                 pool = sorted((c for c in self.cands.values() if not c.arb and c.edge is not None),
@@ -364,8 +391,67 @@ class Engine:
                 rest = [view.to_dict(c, bank, self.books.asks(c.sel.token)) for c in pool]
             hidden = {k: [{"value": v, "label": lab} for v, (lab, _) in d.items()]
                       for k, d in self.hidden.items()}
+            del hidden["pin"]
             return {"arbs": [a for a in arbs if a], "near": [a for a in rest if a],
+                    "pinned": pinned, "pins": list(self.hidden["pin"]),
+                    "bets": list(self.bets), "sports": dict(self.sports),
                     "hold": self.hold, "hidden": hidden, **self.stats()}
+
+    # ------------------------------------------------------------ учёт ставок
+    def _load_bets(self) -> None:
+        try:
+            with open(BETS_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                self.bets = data
+        except (OSError, ValueError):
+            pass
+
+    def _save_bets(self) -> None:
+        try:
+            tmp = BETS_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.bets, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, BETS_FILE)
+        except OSError:
+            pass
+
+    def add_bet(self, body: dict) -> None:
+        """Сохранить проставленную вилку. Суммы приходят со страницы — их вводит человек."""
+        def num(x):
+            try:
+                v = float(x)
+            except (TypeError, ValueError):
+                return 0.0
+            return v if 0 <= v < 1e9 else 0.0
+
+        legs = []
+        for leg in (body.get("legs") or [])[:4]:
+            if isinstance(leg, dict):
+                legs.append({"site": str(leg.get("site", ""))[:20], "what": str(leg.get("what", ""))[:120],
+                             "stake": num(leg.get("stake")), "k": num(leg.get("k")),
+                             "payout": num(leg.get("payout"))})
+        if not legs:
+            return
+        total = sum(l["stake"] for l in legs)
+        bet = {"id": f"{time.time():.3f}", "ts": time.time(),
+               "match": str(body.get("match", ""))[:160], "sport": str(body.get("sport", ""))[:30],
+               "when": str(body.get("when", ""))[:60], "note": str(body.get("note", ""))[:200],
+               "bc_url": str(body.get("bc_url", ""))[:400], "pm_url": str(body.get("pm_url", ""))[:400],
+               "legs": legs, "total": total,
+               # при каком исходе сколько вернётся; худший случай — гарантированный результат
+               "profit_min": min(l["payout"] for l in legs) - total,
+               "profit_max": max(l["payout"] for l in legs) - total}
+        with self.lock:
+            self.bets.append(bet)
+            self._save_bets()
+        self.wake.set()
+
+    def delete_bet(self, bet_id: str) -> None:
+        with self.lock:
+            self.bets = [b for b in self.bets if b.get("id") != bet_id]
+            self._save_bets()
+        self.wake.set()
 
     # ------------------------------------------------------- скрытое вручную
     def _load_hidden(self) -> None:
@@ -403,7 +489,7 @@ class Engine:
     def unhide(self, kind: str | None = None, value: str | None = None) -> None:
         with self.lock:
             for k, d in self.hidden.items():
-                if kind in (None, k):
+                if kind == k or (kind is None and k != "pin"):   # «Показать всё» не снимает закрепление
                     if value is None:
                         d.clear()
                     else:

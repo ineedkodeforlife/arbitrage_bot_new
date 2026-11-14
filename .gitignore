@@ -6,3 +6,5 @@ __pycache__/
 .env
 hidden.json
 hidden.json.tmp
+bets.json
+bets.json.tmp

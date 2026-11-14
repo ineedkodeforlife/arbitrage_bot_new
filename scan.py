@@ -153,11 +153,16 @@ def main() -> None:
     engine = Engine(args)
     if hub:
         def command(path, body):
-            if path == "/hide":
+            if path == "/hide":         # в том числе закрепление: kind = "pin"
                 engine.hide(str(body.get("kind")), str(body.get("value") or ""),
                             str(body.get("label") or ""))
-            else:
+            elif path == "/unhide":
                 engine.unhide(body.get("kind"), body.get("value"))
+            elif path == "/bet":
+                engine.add_bet(body)
+            elif path == "/bet/delete":
+                engine.delete_bet(str(body.get("id")))
+        hub.bets = lambda: engine.bets
         hub.on_command = command
     t0 = time.perf_counter()
     print("Загружаю линию BC Game и список игр Polymarket…")
