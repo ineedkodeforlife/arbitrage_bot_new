@@ -4,3 +4,5 @@ __pycache__/
 *.csv
 *.log
 .env
+hidden.json
+hidden.json.tmp

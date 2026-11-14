@@ -81,6 +81,11 @@ def main() -> None:
     p.add_argument("--min-profit", type=float, default=0.0, help="минимальная доходность, %%")
     p.add_argument("--min-volume", type=float, default=0.0,
                    help="не показывать вилки, в которые помещается меньше N долларов")
+    p.add_argument("--max-profit", type=float, default=0.0,
+                   help="не показывать вилки с доходностью выше N %% (обычно это ошибка); 0 — показывать все")
+    p.add_argument("--hold", type=float, default=3.0,
+                   help="в режиме --watch сообщать о вилке, когда она продержалась N секунд "
+                        "(0 — сразу); секундные всплески в лайве руками всё равно не поймать")
     p.add_argument("--bank", type=float, default=100.0, help="сумма для расчёта ставок, $")
     p.add_argument("--near", type=int, default=0,
                    help="дополнительно показать N связок, ближайших к вилке")
@@ -92,6 +97,10 @@ def main() -> None:
     p.add_argument("--sound", action="store_true", help="звуковой сигнал при новой вилке")
     p.add_argument("--web", type=int, nargs="?", const=8765, default=None, metavar="PORT",
                    help="страница с вилками и уведомлениями в браузере (порт, по умолчанию 8765)")
+    p.add_argument("--tg-token", default=os.environ.get("ARB_TG_TOKEN"),
+                   help="токен бота Telegram для уведомлений (или переменная ARB_TG_TOKEN)")
+    p.add_argument("--tg-chat", default=os.environ.get("ARB_TG_CHAT"),
+                   help="chat_id, куда слать уведомления (или переменная ARB_TG_CHAT)")
     p.add_argument("--proxy", help="HTTP-прокси для линии BC Game: host:port или none "
                                    "(по умолчанию берётся из HTTPS_PROXY / настроек системы)")
     p.add_argument("--verbose", action="store_true")
@@ -113,7 +122,29 @@ def main() -> None:
         print(f"Страница с вилками: http://localhost:{args.web}  "
               f"(нажмите на ней «Включить уведомления и звук»)")
 
+    tg = None
+    if args.tg_token or args.tg_chat:
+        if not (args.tg_token and args.tg_chat):
+            sys.exit("Для Telegram нужны и токен, и chat_id (--tg-token и --tg-chat).")
+        from arb.notify import Telegram
+        tg = Telegram(args.tg_token, args.tg_chat)
+        err = tg.check()
+        if err:
+            print(f"Telegram: пробное сообщение не отправилось ({err[:200]}). "
+                  f"Уведомления в Telegram отключены.")
+            tg = None
+        else:
+            print("Telegram: пробное сообщение отправлено.")
+
     engine = Engine(args)
+    if hub:
+        def command(path, body):
+            if path == "/hide":
+                engine.hide(str(body.get("kind")), str(body.get("value") or ""),
+                            str(body.get("label") or ""))
+            else:
+                engine.unhide(body.get("kind"), body.get("value"))
+        hub.on_command = command
     t0 = time.perf_counter()
     print("Загружаю линию BC Game и список игр Polymarket…")
     engine.start(args.watch)
@@ -148,7 +179,9 @@ def main() -> None:
         publish()
         return
 
-    print(f"Слежу за вилками от {args.min_profit:g}% ({mode_name}). Остановить: Ctrl+C.")
+    print(f"Слежу за вилками от {args.min_profit:g}% ({mode_name})"
+          + (f", сообщаю о тех, что держатся от {args.hold:g} с" if args.hold > 0 else "")
+          + ". Остановить: Ctrl+C.")
     alerted: dict = {}          # вилка -> когда последний раз о ней сообщали
     started = last_status = last_pub = time.time()
     try:
@@ -169,14 +202,18 @@ def main() -> None:
                         print(f"\n[{time.strftime('%H:%M:%S', time.localtime(ep['start']))}] ВИЛКА "
                               + view.text(d), flush=True)
                         ring = True
+                        if tg:
+                            tg.send(d)
                     alerted[d["id"]] = now
                 else:
                     lasted = ep["gone_at"] - ep["start"]
+                    rows.append(view.csv_row(d, ep["start"], lasted, ep["peak"]))
+                    if not ep["announced"]:     # всплеск короче --hold: только в журнал
+                        continue
                     alerted[d["id"]] = ep["gone_at"]
                     print(f"[{time.strftime('%H:%M:%S')}] вилка закрылась: {d['match']} — "
                           f"{d['legs'][-1]['what']}; держалась {lasted:.1f} с, "
                           f"максимум {ep['peak'] * 100:+.2f}%", flush=True)
-                    rows.append(view.csv_row(d, ep["start"], lasted, ep["peak"]))
             if ring and args.sound:
                 beep()
             if rows and args.csv:

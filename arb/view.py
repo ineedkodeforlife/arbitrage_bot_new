@@ -66,7 +66,13 @@ def to_dict(c, bank: float, asks: list) -> dict | None:
                  "stake": shares * cost})
     volume = (f"Объём по стакану: до ${arb.total_stake:,.0f}, прибыль до ${arb.profit_usd:,.2f}"
               if arb else f"На лучшей цене доступно {asks[0][1]:,.0f} акций")
+    ep = c.episode
     return {"id": f"{c.bc_id}|{c.sel.token}", "pct": round(edge * 100, 2),
+            "bc_id": c.bc_id, "since": ep["start"] if ep else None,
+            "announced": bool(ep and ep["announced"]),
+            # для калькулятора на странице: кф плеч BC, верх стакана, комиссия
+            "calc": {"ks": [bc.odds[l] for l in c.legs], "asks": asks[:15],
+                     "fee": c.sel.fee_rate, "max_shares": arb.shares if arb else 0.0},
             "match": f"{bc.c1} — {bc.c2}", "sport": bc.sport, "when": when, "live": bc.live,
             "start": bc.start, "c1": bc.c1, "c2": bc.c2,
             "suspicious": edge > SUSPICIOUS, "weak": c.weak,
