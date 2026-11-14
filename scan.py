@@ -96,7 +96,11 @@ def main() -> None:
     p.add_argument("--csv", help="записывать вилки в CSV-файл (с временем жизни каждой)")
     p.add_argument("--sound", action="store_true", help="звуковой сигнал при новой вилке")
     p.add_argument("--web", type=int, nargs="?", const=8765, default=None, metavar="PORT",
-                   help="страница с вилками и уведомлениями в браузере (порт, по умолчанию 8765)")
+                   help="страница с вилками в браузере; в режиме --watch включена сама "
+                        "(порт по умолчанию 8765)")
+    p.add_argument("--no-web", action="store_true", help="не запускать страницу, только консоль")
+    p.add_argument("--no-browser", action="store_true",
+                   help="не открывать страницу в браузере автоматически")
     p.add_argument("--tg-token", default=os.environ.get("ARB_TG_TOKEN"),
                    help="токен бота Telegram для уведомлений (или переменная ARB_TG_TOKEN)")
     p.add_argument("--tg-chat", default=os.environ.get("ARB_TG_CHAT"),
@@ -116,11 +120,21 @@ def main() -> None:
     http.set_proxy(args.proxy)
 
     hub = None
-    if args.web is not None:
+    if args.watch and args.web is None and not args.no_web:
+        args.web = 8765
+    if args.web is not None and not args.no_web:
         from arb import web
-        hub = web.serve(args.web)
-        print(f"Страница с вилками: http://localhost:{args.web}  "
-              f"(нажмите на ней «Включить уведомления и звук»)")
+        url = f"http://localhost:{args.web}"
+        try:
+            hub = web.serve(args.web)
+        except OSError as e:
+            print(f"Страница не запущена: порт {args.web} занят ({e}). Возможно, сканер уже "
+                  f"работает в другом окне; другой порт задаётся так: --web 8766")
+        else:
+            print(f"Страница с вилками: {url}  (нажмите на ней «Включить уведомления и звук»)")
+            if not args.no_browser:
+                import webbrowser
+                threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
 
     tg = None
     if args.tg_token or args.tg_chat:
