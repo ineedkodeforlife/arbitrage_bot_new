@@ -1,6 +1,6 @@
 """Локальная страница со списком вилок и мгновенными уведомлениями в браузере.
 
-Сканер после каждого прохода отдаёт результат открытым вкладкам через
+Сканер при каждом изменении отдаёт результат открытым вкладкам через
 Server-Sent Events — без опроса и без внешних сервисов, задержка в миллисекундах.
 Страница доступна только с этого компьютера (127.0.0.1).
 """
@@ -41,7 +41,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 <header><h1>Вилки BC Game + Polymarket</h1>
 <div class="bar"><button id="enable" class="primary">Включить уведомления и звук</button><button id="test">Проверить</button></div></header>
 <div id="status"><span class="dot" id="dot"></span><span id="st">подключение…</span></div>
-<h2>Вилки</h2><div id="arbs"><div class="empty">Ждём первый проход сканера…</div></div>
+<h2>Вилки</h2><div id="arbs"><div class="empty">Ждём данные сканера…</div></div>
 <div id="nearwrap" hidden><h2>Ближайшие к вилке</h2><div id="near"></div></div>
 </main><script>
 const $=id=>document.getElementById(id);let ctx=null,seen=new Map(),first=true;
@@ -58,7 +58,7 @@ $('enable').onclick=async()=>{beep();if('Notification'in window&&Notification.pe
 $('test').onclick=()=>notify('Проверка: вилка +1.23%','Команда A — Команда B\nТак будет выглядеть уведомление');
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function card(a,isArb,fresh){return `<div class="card ${isArb?'arb':''} ${fresh?'fresh':''}"><div class="top"><span class="pct">${a.pct>0?'+':''}${a.pct.toFixed(2)}%</span>
-<span class="match">${esc(a.match)}</span><span class="meta">${esc(a.sport)} · ${esc(a.when)}</span>${a.suspicious?'<span class="flag">проверьте вручную — слишком большая доходность</span>':''}</div>
+<span class="match">${esc(a.match)}</span><span class="meta">${esc(a.sport)} · ${esc(a.when)}</span>${a.suspicious?'<span class="flag">проверьте вручную — слишком большая доходность</span>':''}${a.weak?`<span class="flag">матч сопоставлен по одной команде — на Polymarket: ${esc(a.pm_match)}</span>`:''}</div>
 <div class="legs">${a.legs.map(l=>`<div class="leg"><b>${esc(l.site)}</b><span>${esc(l.what)}</span><span>${esc(l.price)} · $${l.stake.toFixed(2)}</span></div>`).join('')}</div>
 <div class="meta">${esc(a.volume)}</div><div class="links"><a href="${esc(a.bc_url)}" target="_blank" rel="noopener">Открыть BC Game</a><a href="${esc(a.pm_url)}" target="_blank" rel="noopener">Открыть Polymarket</a></div></div>`}
 function render(d){const now=Date.now(),fresh=new Set();
@@ -68,7 +68,7 @@ function render(d){const now=Date.now(),fresh=new Set();
  first=false;
  $('arbs').innerHTML=d.arbs.length?d.arbs.map(a=>card(a,true,fresh.has(a.id))).join(''):`<div class="empty">Сейчас вилок от ${d.min_profit}% нет.</div>`;
  $('nearwrap').hidden=!d.near.length;$('near').innerHTML=d.near.map(a=>card(a,false,false)).join('');
- $('st').textContent=`${d.mode} · проход в ${d.time} за ${d.ms} мс · совпало матчей ${d.matched} · связок ${d.cands}`;
+ const bl=Object.entries(d.bc||{}).map(([m,b])=>`BC ${m==='live'?'лайв':'прематч'} ${b.error?'ошибка':(b.lag==null?'…':b.lag.toFixed(1)+' с')}`).join(' · ');const ws=d.ws&&d.ws.on?` · Polymarket ${d.ws.alive?Math.max(d.ws.lag_ms,0).toFixed(0)+' мс':'переподключение'}`:'';$('st').textContent=`${d.mode} · ${d.time} · матчей ${d.matched} · связок ${d.cands} · отставание: ${bl}${ws}`;
  document.title=(d.arbs.length?`(${d.arbs.length}) `:'')+'Вилки BC Game + Polymarket'}
 function connect(){const es=new EventSource('/events');es.onopen=()=>$('dot').classList.add('on');
  es.onmessage=e=>render(JSON.parse(e.data));es.onerror=()=>{$('dot').classList.remove('on');$('st').textContent='нет связи со сканером — он запущен?'}}

@@ -7,21 +7,27 @@ from dataclasses import dataclass
 # pm_key -> список наборов ключей BC (каждый набор — альтернативный способ закрыть плечо).
 def bc_complements(pm_key: tuple) -> list[list[tuple]]:
     kind = pm_key[0]
-    if kind == "ml":
-        other = "c2" if pm_key[1] == "c1" else "c1"
-        return [[("ml", other)]]
-    if kind == "total":
-        other = "under" if pm_key[2] == "over" else "over"
-        return [[("total", pm_key[1], other)]]
-    if kind == "hcp":
-        other = "c2" if pm_key[2] == "c1" else "c1"
-        return [[("hcp", pm_key[1], other)]]
+    swap = {"c1": "c2", "c2": "c1", "over": "under", "under": "over", "yes": "no", "no": "yes"}
+    if kind in ("ml", "btts"):
+        return [[(kind, swap[pm_key[1]])]]
+    if kind in ("total", "hcp", "sethcp", "map", "set"):
+        return [[(kind, pm_key[1], swap[pm_key[2]])]]
+    # Футбол, основное время. Фора ±0.5 в BC — то же самое, что исход 1X2 / двойной шанс:
+    # ("hcp", -0.5, "c1") = победа c1, ("hcp", -0.5, "c2") = c2 с форой +0.5 = X2.
+    half = {"c1": ("hcp", -0.5, "c1"), "c2": ("hcp", 0.5, "c2")}        # победа команды
+    not_lose = {"c1": ("hcp", 0.5, "c1"), "c2": ("hcp", -0.5, "c2")}    # команда не проиграет
     if kind == "1x2":            # PM: «Да» на исход X -> в BC нужны два других исхода
         rest = [o for o in ("c1", "draw", "c2") if o != pm_key[1]]
         dc = {"c1": "xc2", "draw": "c12", "c2": "c1x"}[pm_key[1]]
-        return [[("dc", dc)], [("1x2", rest[0]), ("1x2", rest[1])]]
+        out = [[("dc", dc)], [("1x2", rest[0]), ("1x2", rest[1])]]
+        if pm_key[1] in swap:
+            out.append([not_lose[swap[pm_key[1]]]])
+        return out
     if kind == "not1x2":         # PM: «Нет» на исход X -> в BC нужен сам X
-        return [[("1x2", pm_key[1])]]
+        out = [[("1x2", pm_key[1])]]
+        if pm_key[1] in half:
+            out.append([half[pm_key[1]]])
+        return out
     return []
 
 

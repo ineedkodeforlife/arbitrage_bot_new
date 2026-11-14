@@ -3,6 +3,10 @@
 Главное для скорости: соединение с каждым хостом открывается один раз на поток
 и переиспользуется (keep-alive), поэтому повторные запросы не тратят время на
 TCP- и TLS-рукопожатие (обычно 150-400 мс на запрос).
+
+Запрос можно направить через HTTP-прокси (туннель CONNECT) — так же, как это
+делает curl, когда задана переменная HTTPS_PROXY. Это нужно для линии BC Game:
+напрямую из некоторых сетей её ответы обрываются после первых 16 КБ.
 """
 from __future__ import annotations
 
@@ -14,6 +18,8 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+import os
+import urllib.request
 from urllib.parse import urlsplit
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -24,21 +30,56 @@ _local = threading.local()
 POOL = ThreadPoolExecutor(8)
 
 
-def _conn(host: str, timeout: float) -> http.client.HTTPSConnection:
+_proxy_override: str | None = None      # задаётся ключом --proxy
+
+
+def set_proxy(value: str | None) -> None:
+    """'' / None — определить автоматически, 'none' — не использовать, иначе host:port."""
+    global _proxy_override
+    _proxy_override = value or None
+
+
+def detect_proxy() -> tuple[str, int] | None:
+    """Адрес HTTP-прокси: ключ --proxy, переменная ARB_PROXY, HTTPS_PROXY или
+    системные настройки Windows. None — прокси нет."""
+    raw = _proxy_override or os.environ.get("ARB_PROXY")
+    if raw and raw.lower() in ("none", "off", "no", "0"):
+        return None
+    if not raw:
+        try:
+            px = urllib.request.getproxies()
+        except Exception:
+            px = {}
+        raw = px.get("https") or px.get("http")
+    if not raw:
+        return None
+    u = urlsplit(raw if "//" in raw else "//" + raw)
+    if u.scheme not in ("", "http") or not u.hostname or u.username:
+        return None                 # SOCKS и прокси с паролем не поддерживаются
+    return u.hostname, u.port or 8080
+
+
+def _conn(host: str, timeout: float, proxy: tuple[str, int] | None = None):
     pool = getattr(_local, "pool", None)
     if pool is None:
         pool = _local.pool = {}
-    c = pool.get(host)
+    key = (host, proxy)
+    c = pool.get(key)
     if c is None:
-        c = pool[host] = http.client.HTTPSConnection(host, timeout=timeout)
+        if proxy:
+            c = http.client.HTTPSConnection(proxy[0], proxy[1], timeout=timeout)
+            c.set_tunnel(host, 443)
+        else:
+            c = http.client.HTTPSConnection(host, timeout=timeout)
+        pool[key] = c
     c.timeout = timeout
     if c.sock is not None:
         c.sock.settimeout(timeout)
     return c
 
 
-def _drop(host: str) -> None:
-    c = getattr(_local, "pool", {}).pop(host, None)
+def _drop(host: str, proxy: tuple[str, int] | None = None) -> None:
+    c = getattr(_local, "pool", {}).pop((host, proxy), None)
     if c is not None:
         try:
             c.close()
@@ -47,7 +88,8 @@ def _drop(host: str) -> None:
 
 
 def fetch_json(url: str, *, body=None, headers: dict | None = None,
-               timeout: float = 40, retries: int = 3):
+               timeout: float = 40, retries: int = 3,
+               proxy: tuple[str, int] | None = None):
     u = urlsplit(url)
     path = u.path + (f"?{u.query}" if u.query else "")
     h = {"User-Agent": UA, "Accept": "application/json", "Accept-Encoding": "gzip",
@@ -61,7 +103,7 @@ def fetch_json(url: str, *, body=None, headers: dict | None = None,
     last = None
     for attempt in range(retries + 1):
         try:
-            c = _conn(u.netloc, timeout)
+            c = _conn(u.netloc, timeout, proxy)
             c.request("POST" if data is not None else "GET", path, body=data, headers=h)
             r = c.getresponse()
             raw = r.read()
@@ -69,6 +111,8 @@ def fetch_json(url: str, *, body=None, headers: dict | None = None,
                 if r.getheader("Content-Encoding") == "gzip":
                     raw = gzip.decompress(raw)
                 return json.loads(raw)
+            if r.getheader("Connection", "").lower() == "close":
+                _drop(u.netloc, proxy)
             last = f"HTTP {r.status}"
             if r.status not in (429, 500, 502, 503, 504):
                 raise RuntimeError(f"{url}: {last} {raw[:200]!r}")
@@ -76,7 +120,7 @@ def fetch_json(url: str, *, body=None, headers: dict | None = None,
         except (http.client.HTTPException, OSError) as e:
             # соединение закрыто сервером — открываем заново, первый повтор без паузы
             last = e
-            _drop(u.netloc)
+            _drop(u.netloc, proxy)
             if attempt:
                 time.sleep(0.5 * attempt)
     raise RuntimeError(f"не удалось получить {url}: {last}")
