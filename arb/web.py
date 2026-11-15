@@ -43,7 +43,7 @@ details.panel summary{cursor:pointer;font-weight:600;font-size:13px}
 .panel .row{display:flex;gap:8px 14px;flex-wrap:wrap;align-items:center;margin:8px 0 4px;font-variant-numeric:tabular-nums}
 .panel .out{font-weight:600}.panel label{display:inline-flex;gap:6px;align-items:center}
 #tabs,#sports{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
-#sports button{padding:3px 10px;font-size:13px;border-radius:999px}
+#sports{display:grid;gap:5px}#sports .frow{display:flex;gap:6px;flex-wrap:wrap;align-items:center}#sports .lbl{color:var(--muted);font-size:12px;min-width:62px}#sports button{padding:3px 10px;font-size:13px;border-radius:999px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:8px;align-items:start}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:13px}
 .card.arb{border-color:var(--good)}.card.young{opacity:.6;border-style:dashed}.card.fresh{animation:flash 2.5s}
@@ -94,7 +94,8 @@ td.num,th.num{text-align:right;white-space:nowrap}
 </main><script>
 const $=id=>document.getElementById(id);let ctx=null,seen=new Map(),last=null;
 const store={get(k,d){try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
-let mode=store.get('mode','total'),amount=store.get('amount',100),sport=store.get('sport','all'),tab='arbs';
+let mode=store.get('mode','total'),amount=store.get('amount',100),sport=store.get('sport','all'),group=store.get('group','all'),when=store.get('when','all'),tab='arbs';
+if(sport==='esports'){sport='all';group='esport'}   // значение от прежней версии страницы
 const SPORT={soccer:'Футбол',basketball:'Баскетбол',tennis:'Теннис',hockey:'Хоккей',football:'Ам. футбол',baseball:'Бейсбол',cs2:'CS2',dota2:'Dota 2',lol:'LoL',valorant:'Valorant',r6:'Rainbow Six',hok:'Honor of Kings',mlbb:'Mobile Legends',cod:'Call of Duty',overwatch:'Overwatch',starcraft:'StarCraft',rocketleague:'Rocket League',wot:'World of Tanks',mma:'MMA',boxing:'Бокс',cricket:'Крикет',volleyball:'Волейбол',darts:'Дартс',tabletennis:'Наст. теннис',aussie:'Австрал. футбол',badminton:'Бадминтон',snooker:'Снукер'};
 const ESPORT=new Set(['cs2','dota2','lol','valorant','r6','hok','mlbb','cod','overwatch','starcraft','rocketleague','wot','wildrift','aov','pubg','apex','crossfire','warcraft','aoe','deadlock','marvelrivals','freefire','brawlstars','halo','fortnite','tft']);
 const isEsport=s=>ESPORT.has(s)||s.startsWith('esport:');const sportName=s=>SPORT[s]||s;
@@ -175,16 +176,26 @@ function hiddenBar(h){const items=[];for(const kind of ['sport','match','market'
  const box=$('hidden');box.hidden=!items.length;if(!items.length)return;
  box.innerHTML='Скрыто: '+items.map(([k,x],i)=>`<span class="chip">${esc(x.label||x.value)}<button data-i="${i}" title="Вернуть">×</button></span>`).join('')+'<button class="sm" data-all="1">Показать всё</button>';
  box.onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.all)post('/unhide',{});else{const [k,x]=items[+b.dataset.i];post('/unhide',{kind:k,value:x.value})}}}
-const pass=a=>sport==='all'||(sport==='esports'?isEsport(a.sport):a.sport===sport);
-function sportTabs(d){const counts=d.sports||{},live={};for(const a of d.arbs)live[a.sport]=(live[a.sport]||0)+1;
- const names=Object.keys(counts).sort((x,y)=>(isEsport(y)-isEsport(x))||counts[y]-counts[x]);
- const es=names.filter(isEsport),esLive=es.reduce((n,s)=>n+(live[s]||0),0);
- const btn=(key,label,n)=>`<button data-sport="${esc(key)}" class="${sport===key?'on':''}">${esc(label)}${n?` · ${n}`:''}</button>`;
- let h=btn('all','Все',d.arbs.length);if(es.length>1)h+=btn('esports','Весь киберспорт',esLive);
- h+=names.map(s=>btn(s,sportName(s),live[s]||0)).join('');
- if(sport!=='all'&&sport!=='esports'&&!(sport in counts))h+=btn(sport,sportName(sport),0);
+// Три фильтра: когда (лайв / прематч), группа (спорт / киберспорт), дисциплина внутри группы.
+const inGroup=s=>group==='all'||(group==='esport')===isEsport(s);
+const passWhen=a=>when==='all'||(when==='live')===!!a.live;
+const pass=a=>passWhen(a)&&inGroup(a.sport)&&(sport==='all'||a.sport===sport);
+function sportTabs(d){const counts=d.sports||{},arbs=d.arbs.filter(passWhen),n={};for(const a of arbs)n[a.sport]=(n[a.sport]||0)+1;
+ const nLive=d.arbs.filter(a=>a.live).length,nEs=arbs.filter(a=>isEsport(a.sport)).length;
+ const btn=(attr,key,cur,label,k)=>`<button data-${attr}="${esc(key)}" class="${cur===key?'on':''}">${esc(label)}${k?` · ${k}`:''}</button>`;
+ let h='<div class="frow"><span class="lbl">Когда</span>'+btn('when','all',when,'Все',d.arbs.length)+btn('when','live',when,'Лайв',nLive)+btn('when','pre',when,'Прематч',d.arbs.length-nLive)+'</div>';
+ h+='<div class="frow"><span class="lbl">Раздел</span>'+btn('group','all',group,'Все',arbs.length)+btn('group','sport',group,'Спорт',arbs.length-nEs)+btn('group','esport',group,'Киберспорт',nEs)+'</div>';
+ if(group!=='all'){const names=Object.keys(counts).filter(inGroup).sort((x,y)=>counts[y]-counts[x]);
+  if(sport!=='all'&&!names.includes(sport))names.push(sport);   // выбранная дисциплина остаётся, даже если матчей сейчас нет
+  h+=`<div class="frow"><span class="lbl">${group==='esport'?'Дисциплина':'Вид спорта'}</span>`+btn('sport','all',sport,'Все',names.reduce((x,s)=>x+(n[s]||0),0))+names.map(s=>btn('sport',s,sport,sportName(s),n[s]||0)).join('')+'</div>'}
  const box=$('sports');if(box._h!==h){box.innerHTML=h;box._h=h}}
-$('sports').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;sport=b.dataset.sport;store.set('sport',sport);if(last)render(last)});
+$('sports').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+ if(b.dataset.when){when=b.dataset.when;store.set('when',when)}
+ else if(b.dataset.group){group=b.dataset.group;sport='all';store.set('group',group);store.set('sport',sport)}   // дисциплины у разделов разные
+ else if(b.dataset.sport){sport=b.dataset.sport;store.set('sport',sport)}
+ if(last)render(last)});
+function filterText(){const parts=[];if(when!=='all')parts.push(when==='live'?'лайв':'прематч');
+ if(sport!=='all')parts.push(sportName(sport));else if(group!=='all')parts.push(group==='esport'?'киберспорт':'спорт');return parts.join(', ')}
 function betsPage(d){const bets=(d.bets||[]).slice().reverse();$('tabs').querySelector('[data-tab="bets"]').textContent=`Мои ставки${bets.length?' · '+bets.length:''}`;
  if(tab!=='bets')return;const tot=bets.reduce((x,b)=>x+b.total,0),pr=bets.reduce((x,b)=>x+b.profit_min,0);
  $('betsum').textContent=bets.length?`Ставок: ${bets.length} · вложено ${money(tot)} · гарантированный результат ${pr<0?'−':'+'}${money(Math.abs(pr))}`:'';
@@ -217,7 +228,7 @@ function render(d){last=d;const now=Date.now(),fresh=new Set(),pins=new Set(d.pi
  const pinned=d.arbs.filter(a=>pins.has(a.id)).concat(d.pinned||[]),rest=arbs.filter(a=>!pins.has(a.id));
  $('pinwrap').hidden=!pinned.length;sync($('pinned'),pinned,fresh,pins,arbIds);sync($('arbs'),rest,fresh,pins,arbIds);
  const ready=arbs.filter(a=>a.announced).length;
- $('noarbs').hidden=rest.length>0;$('noarbs').textContent=`Сейчас вилок от ${d.min_profit}% нет`+(sport==='all'?'.':` (${sport==='esports'?'киберспорт':sportName(sport)}).`);
+ $('noarbs').hidden=rest.length>0;$('noarbs').textContent=`Сейчас вилок от ${d.min_profit}% нет`+(filterText()?` (${filterText()}).`:'.');
  const near=d.near.filter(pass);$('nearwrap').hidden=!near.length;sync($('near'),near,fresh,pins,arbIds);
  hiddenBar(d.hidden);sportTabs(d);betsPage(d);
  const bl=Object.entries(d.bc||{}).map(([m,b])=>`BC ${m==='live'?'лайв':'прематч'} ${b.error?'ошибка':(b.lag==null?'…':b.lag.toFixed(1)+' с')}`).join(' · ');
