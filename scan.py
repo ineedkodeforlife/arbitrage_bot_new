@@ -105,6 +105,9 @@ def main() -> None:
                    help="токен бота Telegram для уведомлений (или переменная ARB_TG_TOKEN)")
     p.add_argument("--tg-chat", default=os.environ.get("ARB_TG_CHAT"),
                    help="chat_id, куда слать уведомления (или переменная ARB_TG_CHAT)")
+    p.add_argument("--pm-trade", action="store_true",
+                   help="кнопка «Купить на Polymarket» на странице (нужны пакет polymarket-client "
+                        "и ключ в переменной ARB_PM_KEY; см. README)")
     p.add_argument("--proxy", help="HTTP-прокси для линии BC Game: host:port или none "
                                    "(по умолчанию берётся из HTTPS_PROXY / настроек системы)")
     p.add_argument("--verbose", action="store_true")
@@ -150,6 +153,18 @@ def main() -> None:
         else:
             print("Telegram: пробное сообщение отправлено.")
 
+    trader = None
+    if args.pm_trade:
+        from arb.trade import TradeError, Trader
+        try:
+            trader = Trader()
+        except TradeError as e:
+            sys.exit(f"Покупка на Polymarket не включена: {e}")
+        bal = trader.balance()
+        print(f"Покупка на Polymarket включена: кошелёк {trader.wallet or '?'}, "
+              f"свободно {'$%.2f' % bal if bal is not None else 'не удалось узнать'}, "
+              f"потолок одной заявки ${trader.limit:.2f}.")
+
     engine = Engine(args)
     if hub:
         def command(path, body):
@@ -162,6 +177,17 @@ def main() -> None:
                 engine.add_bet(body)
             elif path == "/bet/delete":
                 engine.delete_bet(str(body.get("id")))
+            elif path == "/pm/buy":
+                if trader is None:
+                    return {"ok": False, "error": "покупка на Polymarket не включена (ключ --pm-trade)"}
+                bc_id, _, token = str(body.get("id") or "").partition("|")
+                if (bc_id, token) not in engine.cands:      # только исходы, которые сканер знает
+                    return {"ok": False, "error": "эта связка уже неактуальна"}
+                try:
+                    return trader.buy(token, body.get("amount"), body.get("max_price"),
+                                      str(body.get("label") or "")[:160])
+                except TradeError as e:
+                    return {"ok": False, "error": str(e)}
         hub.bets = lambda: engine.bets
         hub.on_command = command
     t0 = time.perf_counter()
@@ -181,7 +207,9 @@ def main() -> None:
         if hub:
             snap = engine.snapshot(args.near)
             hub.publish({"time": time.strftime("%H:%M:%S"), "mode": mode_name,
-                         "min_profit": args.min_profit, "watch": args.watch, **snap})
+                         "min_profit": args.min_profit, "watch": args.watch,
+                         "trade": {"enabled": trader is not None,
+                                   "limit": trader.limit if trader else 0}, **snap})
 
     if not args.watch:
         snap = engine.snapshot(args.near)

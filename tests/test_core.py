@@ -183,5 +183,73 @@ class Ws(unittest.TestCase):
         self.assertEqual(ws._frame()[2], b"ok")
 
 
+class FakeOrder:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class FakeClient:
+    """Вместо SDK Polymarket: запоминает заявки и отвечает заранее заданным образом."""
+    def __init__(self, reply):
+        self.reply, self.calls = reply, []
+
+    def place_market_order(self, **kw):
+        self.calls.append(kw)
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+
+class Trade(unittest.TestCase):
+    def setUp(self):
+        from arb import trade
+        self.trade = trade
+        trade.LOG_FILE = os.devnull
+
+    def test_limits(self):
+        t = self.trade
+        self.assertEqual(t.check("12.349", "0.55", 25), (12.34, 0.55))     # центы — вниз
+        for amount, price in ((30, 0.5), (0.5, 0.5), (10, 1.0), (10, 0), ("x", 0.5)):
+            with self.assertRaises(t.TradeError):
+                t.check(amount, price, 25)
+
+    def test_buy(self):
+        t = self.trade
+        fake = FakeClient(FakeOrder(ok=True, status="matched", order_id="0xabc",
+                                    making_amount="12.30", taking_amount="24.6"))
+        tr = t.Trader(client=fake, limit=25)
+        r = tr.buy("tok", 12.34, 0.51, "матч")
+        self.assertEqual(fake.calls, [{"asset_id": "tok", "side": "BUY", "amount": "12.34",
+                                       "max_price": "0.51", "order_type": "FAK"}])
+        self.assertTrue(r["ok"])
+        self.assertEqual((r["shares"], r["spent"]), (24.6, 12.3))
+        self.assertAlmostEqual(r["price"], 0.5)
+        with self.assertRaises(t.TradeError):       # повторное нажатие сразу — не отправляем
+            tr.buy("tok", 12.34, 0.51)
+        self.assertEqual(len(fake.calls), 1)
+        with self.assertRaises(t.TradeError):       # больше потолка — не отправляем
+            tr.buy("tok2", 26, 0.51)
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_rejected_and_error(self):
+        t = self.trade
+        tr = t.Trader(client=FakeClient(FakeOrder(ok=False, code="fak_not_filled", message="")), limit=25)
+        r = tr.buy("tok", 5, 0.4)
+        self.assertFalse(r["ok"])
+        self.assertIn("ничего нет", r["error"])
+        tr = t.Trader(client=FakeClient(RuntimeError("boom")), limit=25)
+        with self.assertRaises(t.TradeError):
+            tr.buy("tok", 5, 0.4)
+
+    def test_needs_key(self):
+        old = os.environ.pop("ARB_PM_KEY", None)
+        try:
+            with self.assertRaises(self.trade.TradeError):
+                self.trade.Trader()
+        finally:
+            if old is not None:
+                os.environ["ARB_PM_KEY"] = old
+
+
 if __name__ == "__main__":
     unittest.main()

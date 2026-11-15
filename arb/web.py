@@ -120,13 +120,13 @@ function ageText(a){if(!a.since)return'';const s=Math.max(0,Date.now()/1000-a.si
 // Расчёт ставок по стакану. N — число акций Polymarket = выплата при любом исходе.
 // Режимы: leg1 — задана ставка в первое плечо BC, leg2 — сколько потратить на Polymarket,
 // total — общая сумма на все плечи.
-function plan(a){const c=a.calc,inv=c.ks.reduce((x,k)=>x+1/k,0);let N=0,spent=0,short=false;
+function plan(a){const c=a.calc,inv=c.ks.reduce((x,k)=>x+1/k,0);let N=0,spent=0,short=false,raw=0,lim=0;
  const unit=p=>p+c.fee*p*(1-p);
- if(mode==='leg1'){N=amount*c.ks[0];let left=N;for(const [p,sz] of c.asks){const t=Math.min(left,sz);spent+=t*unit(p);left-=t;if(left<=1e-9)break}short=left>1e-6}
+ if(mode==='leg1'){N=amount*c.ks[0];let left=N;for(const [p,sz] of c.asks){const t=Math.min(left,sz);spent+=t*unit(p);raw+=t*p;lim=p;left-=t;if(left<=1e-9)break}short=left>1e-6}
  else{let budget=amount;short=true;for(const [p,sz] of c.asks){const per=unit(p)+(mode==='total'?inv:0),can=budget/per;
-   if(can<=sz){N+=can;spent+=can*unit(p);budget=0;short=false;break}N+=sz;spent+=sz*unit(p);budget-=sz*per}}
+   lim=p;if(can<=sz){N+=can;spent+=can*unit(p);raw+=can*p;budget=0;short=false;break}N+=sz;spent+=sz*unit(p);raw+=sz*p;budget-=sz*per}}
  const bc=c.ks.map(k=>N/k),total=bc.reduce((x,y)=>x+y,0)+spent;
- return{N,bc,spent,total,profit:N-total,short,over:c.max_shares>0&&N>c.max_shares+1e-6}}
+ return{N,bc,spent,total,profit:N-total,short,raw,lim,over:c.max_shares>0&&N>c.max_shares+1e-6}}
 function bodyHtml(a,isArb){const r=a.stale?null:plan(a),bcLegs=a.legs.slice(0,-1),pm=a.legs[a.legs.length-1];
  let h=`<div class="top"><span class="pct">${a.pct>0?'+':''}${a.pct.toFixed(2)}%</span><span class="match">${esc(a.match)}</span><span class="meta">${esc(sportName(a.sport))} · ${esc(a.when)}</span>${isArb&&a.since?`<span class="age">${ageText(a)}</span>`:''}${a.stale?'<span class="meta">нет данных — матч закончился или рынок закрыт</span>':''}${a.suspicious?'<span class="flag">проверьте вручную — слишком большая доходность</span>':''}${a.weak?`<span class="flag">матч сопоставлен по одной команде — на Polymarket: ${esc(a.pm_match)}</span>`:''}</div><div class="legs">`;
  h+=bcLegs.map((l,i)=>`<div class="leg"><b>BC Game</b><span>${esc(l.what)} · кф ${l.k}</span><span class="amt">${r?money(r.bc[i]):''}</span>${r?`<button class="sm" data-copy="${r.bc[i].toFixed(2)}">коп.</button>`:'<span></span>'}</div>`).join('');
@@ -134,10 +134,26 @@ function bodyHtml(a,isArb){const r=a.stale?null:plan(a),bcLegs=a.legs.slice(0,-1
  if(r){if(r.short)h+='<div class="bad">В стакане не хватает объёма на такую сумму — уменьшите её.</div>';
   else h+=`<div class="sum ${r.profit<0?'bad':''}">Всего ${money(r.total)} → вернётся ${money(r.N)} · ${r.profit<0?'убыток':'прибыль'} ${money(Math.abs(r.profit))} (${(100*r.profit/r.total).toFixed(2)}%)${r.over?' <span class="meta">· сумма больше объёма вилки, часть по худшей цене</span>':''}</div>`}
  return h+`<div class="meta">${esc(a.volume)}</div>`}
-function saveForm(el){const a=el._a,r=plan(a),bcLegs=a.legs.slice(0,-1),pm=a.legs[a.legs.length-1],f=el.querySelector('.form');
+// Заявка на Polymarket: сумма без комиссии и потолок цены берутся из расчёта карточки.
+async function buyPm(el,btn){const a=el._a;if(a.stale)return;const r=plan(a),pm=a.legs[a.legs.length-1],t=(last&&last.trade)||{},f=el.querySelector('.form');
+ const say=(html)=>{f.hidden=false;f.innerHTML=html+'<div class="frow"><button class="sm" data-act="save-cancel">Закрыть</button></div>'};
+ if(r.short||!(r.raw>=1))return say('<div class="bad">Заявку отправить нельзя: в стакане не хватает объёма или сумма меньше $1.</div>');
+ if(r.raw>t.limit)return say(`<div class="bad">Сумма ${money(r.raw)} больше потолка одной заявки ${money(t.limit)}. Уменьшите сумму в калькуляторе или поднимите потолок (ARB_PM_MAX).</div>`);
+ if(!confirm(`Купить на Polymarket?\n\n${a.match}\n${pm.what}\n\nПотратить: ${money(r.raw)} (без учёта комиссии)\nОжидается: около ${r.N.toFixed(1)} акций\nНе дороже ${r.lim} за акцию\n\nЗаявка уйдёт сразу. Сначала убедитесь, что ставка в BC Game уже принята.`))return;
+ btn.disabled=true;say('<div class="meta">Отправляю заявку…</div>');let res;
+ try{const resp=await fetch('/pm/buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:a.id,amount:r.raw,max_price:r.lim,label:a.match+': '+pm.what})});
+  res=resp.ok?await resp.json():{ok:false,error:'сканер не принял команду (код '+resp.status+')'}}catch(e){res={ok:false,error:'нет связи со сканером'}}
+ setTimeout(()=>btn.disabled=false,5000);
+ if(!res.ok)return say(`<div class="bad">${esc(res.error||'заявка не исполнена')}</div><div class="meta">На Polymarket ничего не куплено.</div>`);
+ if(res.status==='delayed'||!(res.shares>0))return say(`<div class="sum">Заявка принята, но ещё не исполнена (на спортивных рынках исполнение идёт с задержкой в несколько секунд).</div><div class="meta">Проверьте результат на странице Polymarket — сканер его не отслеживает. Номер заявки: ${esc(res.order_id)}</div>`);
+ el._fill={shares:res.shares,spent:res.spent};const part=res.shares<r.N*0.98,k=a.calc.ks;
+ say(`<div class="sum">Куплено ${res.shares.toFixed(2)} акций за ${money(res.spent)} · средняя цена ${res.price.toFixed(4)} · ${res.ms} мс</div>`+
+  (part?`<div class="bad">Исполнилось меньше, чем планировалось (${r.N.toFixed(1)}). Этим акциям соответствует ставка в BC Game: ${k.map(x=>money(res.shares/x)).join(' + ')}.</div>`:'')+
+  '<div class="meta">Нажмите «Сохранить ставку» — в форму подставится то, что куплено на деле.</div>')}
+function saveForm(el){const a=el._a,r=plan(a),fill=el._fill||{shares:r.N,spent:r.spent},bcLegs=a.legs.slice(0,-1),pm=a.legs[a.legs.length-1],f=el.querySelector('.form');
  f.hidden=false;f.innerHTML='<div class="meta">Впишите, что получилось на самом деле, и сохраните.</div>'+
   bcLegs.map((l,i)=>`<div class="frow"><b>BC Game</b><span>${esc(l.what)}</span><label>ставка $<input type="number" step="0.01" data-f="stake${i}" value="${r.bc[i].toFixed(2)}"></label><label>кф<input type="number" step="0.01" data-f="k${i}" value="${l.k}"></label></div>`).join('')+
-  `<div class="frow"><b>Polymarket</b><span>${esc(pm.what)}</span><label>акций<input type="number" step="0.1" data-f="shares" value="${r.N.toFixed(1)}"></label><label>потрачено $<input type="number" step="0.01" data-f="spent" value="${r.spent.toFixed(2)}"></label></div>
+  `<div class="frow"><b>Polymarket</b><span>${esc(pm.what)}</span><label>акций<input type="number" step="0.1" data-f="shares" value="${fill.shares.toFixed(2)}"></label><label>потрачено $<input type="number" step="0.01" data-f="spent" value="${fill.spent.toFixed(2)}"></label></div>
 <div class="frow"><input type="text" data-f="note" placeholder="заметка (необязательно)" style="flex:1;min-width:140px"><button class="primary sm" data-act="save-ok">Сохранить</button><button class="sm" data-act="save-cancel">Отмена</button></div>`}
 function submitBet(el){const a=el._a,f=el.querySelector('.form'),v=n=>parseFloat((f.querySelector(`[data-f="${n}"]`)||{}).value)||0,bcLegs=a.legs.slice(0,-1),pm=a.legs[a.legs.length-1];
  const legs=bcLegs.map((l,i)=>({site:'BC Game',what:l.what,stake:v('stake'+i),k:v('k'+i),payout:v('stake'+i)*v('k'+i)}));
@@ -146,13 +162,14 @@ function submitBet(el){const a=el._a,f=el.querySelector('.form'),v=n=>parseFloat
  f.hidden=true;f.innerHTML='';const b=el.querySelector('[data-act="save"]');b.textContent='Сохранено ✓';setTimeout(()=>b.textContent='Сохранить ставку',1500)}
 function makeCard(a){const el=document.createElement('div');el.dataset.id=a.id;
  el.innerHTML=`<div class="dyn"></div><div class="foot"><a class="bc" target="_blank" rel="noopener">BC Game ↗</a><a class="pm" target="_blank" rel="noopener">Polymarket ↗</a><span class="sp"></span>
-<button class="sm" data-act="pin"></button><button class="sm" data-act="save">Сохранить ставку</button>
+<button class="sm primary" data-act="buy" hidden>Купить на Polymarket</button><button class="sm" data-act="pin"></button><button class="sm" data-act="save">Сохранить ставку</button>
 <select class="sm" data-act="hide" style="padding:1px 4px;font-size:12px"><option value="">Скрыть…</option><option value="market">эту связку</option><option value="match">этот матч</option><option value="sport">вид спорта</option></select></div><div class="form" hidden></div>`;
  // pointerdown, а не click: карточка обновляется несколько раз в секунду, и кнопка
  // внутри расчёта может быть перерисована между нажатием и отпусканием
  el.addEventListener('pointerdown',e=>{const b=e.target.closest('button[data-copy]');if(b){e.preventDefault();copy(b.dataset.copy,b)}});
  el.addEventListener('click',e=>{const b=e.target.closest('button[data-act]');if(!b)return;const cur=el._a,act=b.dataset.act;
   if(act==='pin'){if(el._pinned)post('/unhide',{kind:'pin',value:cur.id});else post('/hide',{kind:'pin',value:cur.id,label:cur.match})}
+  else if(act==='buy')buyPm(el,b);
   else if(act==='save')saveForm(el);else if(act==='save-ok')submitBet(el);
   else if(act==='save-cancel'){const f=el.querySelector('.form');f.hidden=true;f.innerHTML=''}});
  el.querySelector('select').addEventListener('change',e=>{const k=e.target.value,cur=el._a;e.target.value='';
@@ -163,6 +180,7 @@ function makeCard(a){const el=document.createElement('div');el.dataset.id=a.id;
 function fill(el,a,isArb,fresh,pinned){el._a=a;el._pinned=pinned;
  el.className='card'+(isArb?' arb':pinned?' off':'')+(isArb&&!a.announced?' young':'')+(fresh?' fresh':'');
  el.querySelector('.dyn').innerHTML=bodyHtml(a,isArb);
+ el.querySelector('[data-act="buy"]').hidden=!(last&&last.trade&&last.trade.enabled)||!!a.stale;
  const pb=el.querySelector('[data-act="pin"]');pb.textContent=pinned?'Открепить':'Закрепить';pb.classList.toggle('on',pinned);
  el.querySelector('.bc').href=a.bc_url;el.querySelector('.pm').href=a.pm_url}
 function sync(box,list,fresh,pins,arbIds){const have=new Map([...box.children].map(c=>[c.dataset.id,c])),ids=new Set(list.map(a=>a.id));
@@ -230,7 +248,7 @@ perm();connect();
 </script></body></html>
 """
 
-COMMANDS = ("/hide", "/unhide", "/bet", "/bet/delete")
+COMMANDS = ("/hide", "/unhide", "/bet", "/bet/delete", "/pm/buy")
 
 
 def bets_csv(bets: list) -> bytes:
@@ -307,8 +325,10 @@ def serve(port: int) -> Hub:
                     raise ValueError
             except ValueError:
                 return self._empty(400)
-            if hub.on_command:
-                hub.on_command(self.path, body)
+            result = hub.on_command(self.path, body) if hub.on_command else None
+            if isinstance(result, dict):        # команда с ответом (заявка на Polymarket)
+                return self._send(json.dumps(result, ensure_ascii=False).encode(),
+                                  "application/json; charset=utf-8")
             self._empty(204)
 
         def do_GET(self):
