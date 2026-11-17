@@ -121,24 +121,36 @@ function ageText(a){if(!a.since)return'';const s=Math.max(0,Date.now()/1000-a.si
 // Расчёт ставок по стакану. N — число акций Polymarket = выплата при любом исходе.
 // Режимы: leg1 — задана ставка в первое плечо BC, leg2 — сколько потратить на Polymarket,
 // total — общая сумма на все плечи.
-function plan(a){const c=a.calc,inv=c.ks.reduce((x,k)=>x+1/k,0);let N=0,spent=0,short=false;
- const unit=p=>p+c.fee*p*(1-p);
- if(mode==='leg1'){N=amount*c.ks[0];let left=N;for(const [p,sz] of c.asks){const t=Math.min(left,sz);spent+=t*unit(p);left-=t;if(left<=1e-9)break}short=left>1e-6}
- else{let budget=amount;short=true;for(const [p,sz] of c.asks){const per=unit(p)+(mode==='total'?inv:0),can=budget/per;
-   if(can<=sz){N+=can;spent+=can*unit(p);budget=0;short=false;break}N+=sz;spent+=sz*unit(p);budget-=sz*per}}
- const bc=c.ks.map(k=>N/k),total=bc.reduce((x,y)=>x+y,0)+spent;
- return{N,bc,spent,total,profit:N-total,short,over:c.max_shares>0&&N>c.max_shares+1e-6}}
+// Расчёт ставок по стакану. Ставки в BC Game — только целые доллары (копейки в ставке
+// выглядят как работа калькулятора вилок). Поэтому: сначала примерная выплата N по
+// выбранному режиму, затем ставки BC округляются до долларов, а акций на Polymarket
+// покупается столько, сколько гарантирует самая маленькая из выплат BC.
+// Режимы: leg1 — задана ставка в первое плечо BC, leg2 — сколько потратить на
+// Polymarket, total — общая сумма на все плечи.
+const unitCost=(c,p)=>p+c.fee*p*(1-p);
+function pmCost(c,N){let left=N,spent=0;for(const [p,sz] of c.asks){const t=Math.min(left,sz);spent+=t*unitCost(c,p);left-=t;if(left<=1e-9)break}
+ return{spent,short:left>1e-6}}
+function plan(a){const c=a.calc,inv=c.ks.reduce((x,k)=>x+1/k,0);let N=0;
+ if(mode==='leg1')N=Math.round(amount)*c.ks[0];
+ else{let budget=amount,full=false;for(const [p,sz] of c.asks){const per=unitCost(c,p)+(mode==='total'?inv:0),can=budget/per;
+   if(can<=sz){N+=can;full=true;break}N+=sz;budget-=sz*per}
+  if(!full)return{N,bc:c.ks.map(k=>Math.max(1,Math.round(N/k))),spent:0,total:0,profit:0,profitMax:0,short:true,over:false}}
+ const bc=c.ks.map(k=>Math.max(1,Math.round(N/k))),pays=bc.map((s,i)=>s*c.ks[i]);
+ N=Math.floor(Math.min(...pays)*100)/100;               // акции Polymarket: до сотых
+ const {spent,short}=pmCost(c,N),total=bc.reduce((x,y)=>x+y,0)+spent;
+ return{N,bc,spent,total,profit:N-total,profitMax:Math.max(...pays)-total,short,over:c.max_shares>0&&N>c.max_shares+1e-6}}
+const usd0=x=>'$'+Math.round(x);
 function bodyHtml(a,isArb){const r=a.stale?null:plan(a),bcLegs=a.legs.slice(0,-1),pm=a.legs[a.legs.length-1];
  let h=`<div class="top"><span class="pct">${a.pct>0?'+':''}${a.pct.toFixed(2)}%</span><span class="match">${esc(a.match)}</span><span class="meta">${esc(sportName(a.sport))} · ${esc(a.when)}</span>${isArb&&a.since?`<span class="age">${ageText(a)}</span>`:''}${a.stale?'<span class="meta">нет данных — матч закончился или рынок закрыт</span>':''}${a.suspicious?'<span class="flag">проверьте вручную — слишком большая доходность</span>':''}${a.weak?`<span class="flag">матч сопоставлен по одной команде — на Polymarket: ${esc(a.pm_match)}</span>`:''}</div><div class="legs">`;
- h+=bcLegs.map((l,i)=>`<div class="leg"><b>BC Game</b><span>${esc(l.what)} · кф ${l.k}</span><span class="amt">${r?money(r.bc[i]):''}</span>${r?`<button class="sm" data-copy="${r.bc[i].toFixed(2)}">коп.</button>`:'<span></span>'}</div>`).join('');
- h+=`<div class="leg"><b>Polymarket</b><span>${esc(pm.what)} · ${esc(pm.price)}</span><span class="amt">${r?r.N.toFixed(1)+' акц ≈ '+money(r.spent):''}</span>${r?`<button class="sm" data-copy="${r.N.toFixed(1)}">коп.</button>`:'<span></span>'}</div></div>`;
+ h+=bcLegs.map((l,i)=>`<div class="leg"><b>BC Game</b><span>${esc(l.what)} · кф ${l.k}</span><span class="amt">${r?usd0(r.bc[i]):''}</span>${r?`<button class="sm" data-copy="${Math.round(r.bc[i])}">коп.</button>`:'<span></span>'}</div>`).join('');
+ h+=`<div class="leg"><b>Polymarket</b><span>${esc(pm.what)} · ${esc(pm.price)}</span><span class="amt">${r&&!r.short?r.N.toFixed(2)+' акц ≈ '+money(r.spent):''}</span>${r&&!r.short?`<button class="sm" data-copy="${r.N.toFixed(2)}">коп.</button>`:'<span></span>'}</div></div>`;
  if(r){if(r.short)h+='<div class="bad">В стакане не хватает объёма на такую сумму — уменьшите её.</div>';
-  else h+=`<div class="sum ${r.profit<0?'bad':''}">Всего ${money(r.total)} → вернётся ${money(r.N)} · ${r.profit<0?'убыток':'прибыль'} ${money(Math.abs(r.profit))} (${(100*r.profit/r.total).toFixed(2)}%)${r.over?' <span class="meta">· сумма больше объёма вилки, часть по худшей цене</span>':''}</div>`}
+  else h+=`<div class="sum ${r.profit<0?'bad':''}">Всего ${money(r.total)} → вернётся ${money(r.N)} · ${r.profit<0?'убыток':'прибыль'} ${money(Math.abs(r.profit))} (${(100*r.profit/r.total).toFixed(2)}%)${r.profitMax-r.profit>=0.01?`, если выиграет BC Game — ${money(r.profitMax)}`:''}${r.over?' <span class="meta">· сумма больше объёма вилки, часть по худшей цене</span>':''}</div>`}
  return h+`<div class="meta">${esc(a.volume)}</div>`}
 function saveForm(el){const a=el._a,r=plan(a),bcLegs=a.legs.slice(0,-1),pm=a.legs[a.legs.length-1],f=el.querySelector('.form');
  f.hidden=false;f.innerHTML='<div class="meta">Впишите, что получилось на самом деле, и сохраните.</div>'+
-  bcLegs.map((l,i)=>`<div class="frow"><b>BC Game</b><span>${esc(l.what)}</span><label>ставка $<input type="number" step="0.01" data-f="stake${i}" value="${r.bc[i].toFixed(2)}"></label><label>кф<input type="number" step="0.01" data-f="k${i}" value="${l.k}"></label></div>`).join('')+
-  `<div class="frow"><b>Polymarket</b><span>${esc(pm.what)}</span><label>акций<input type="number" step="0.1" data-f="shares" value="${r.N.toFixed(1)}"></label><label>потрачено $<input type="number" step="0.01" data-f="spent" value="${r.spent.toFixed(2)}"></label></div>
+  bcLegs.map((l,i)=>`<div class="frow"><b>BC Game</b><span>${esc(l.what)}</span><label>ставка $<input type="number" step="1" data-f="stake${i}" value="${Math.round(r.bc[i])}"></label><label>кф<input type="number" step="0.01" data-f="k${i}" value="${l.k}"></label></div>`).join('')+
+  `<div class="frow"><b>Polymarket</b><span>${esc(pm.what)}</span><label>акций<input type="number" step="0.1" data-f="shares" value="${r.N.toFixed(2)}"></label><label>потрачено $<input type="number" step="0.01" data-f="spent" value="${r.spent.toFixed(2)}"></label></div>
 <div class="frow"><input type="text" data-f="note" placeholder="заметка (необязательно)" style="flex:1;min-width:140px"><button class="primary sm" data-act="save-ok">Сохранить</button><button class="sm" data-act="save-cancel">Отмена</button></div>`}
 function submitBet(el){const a=el._a,f=el.querySelector('.form'),v=n=>parseFloat((f.querySelector(`[data-f="${n}"]`)||{}).value)||0,bcLegs=a.legs.slice(0,-1),pm=a.legs[a.legs.length-1];
  const legs=bcLegs.map((l,i)=>({site:'BC Game',what:l.what,stake:v('stake'+i),k:v('k'+i),payout:v('stake'+i)*v('k'+i)}));
@@ -212,8 +224,10 @@ $('bets').addEventListener('click',e=>{const b=e.target.closest('button[data-del
 $('tabs').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;tab=b.dataset.tab;
  for(const x of $('tabs').children)x.classList.toggle('on',x===b);$('page-arbs').hidden=tab!=='arbs';$('page-bets').hidden=tab!=='bets';if(last)render(last)});
 function manual(){const k1=parseFloat($('k1').value),k2=parseFloat($('k2').value);if(!(k1>1&&k2>1&&amount>0)){$('manual').textContent='';return}
- const N=mode==='leg1'?amount*k1:mode==='leg2'?amount*k2:amount/(1/k1+1/k2),s1=N/k1,s2=N/k2,p=N-s1-s2;
- $('manual').textContent=`1-е плечо ${money(s1)} · 2-е плечо ${money(s2)} · всего ${money(s1+s2)} · ${p<0?'убыток':'прибыль'} ${money(Math.abs(p))} (${(100*p/(s1+s2)).toFixed(2)}%)`}
+ const N=mode==='leg1'?Math.round(amount)*k1:mode==='leg2'?Math.round(amount)*k2:amount/(1/k1+1/k2);
+ const s1=Math.max(1,Math.round(N/k1)),s2=Math.max(1,Math.round(N/k2)),t=s1+s2,p1=s1*k1-t,p2=s2*k2-t,p=Math.min(p1,p2);
+ $('manual').textContent=`1-е плечо $${s1} · 2-е плечо $${s2} · всего $${t} · ${p<0?'убыток':'прибыль'} ${money(Math.abs(p))} (${(100*p/t).toFixed(2)}%)`+
+  (Math.abs(p1-p2)>=0.01?` · при выигрыше 1-го ${money(p1)}, 2-го ${money(p2)}`:'')}
 $('mode').value=mode;$('amount').value=amount;$('calcbox').open=store.get('calcopen',true);
 $('calcbox').addEventListener('toggle',()=>store.set('calcopen',$('calcbox').open));
 $('mode').onchange=e=>{mode=e.target.value;store.set('mode',mode);manual();if(last)render(last)};

@@ -15,6 +15,11 @@ CSV_HEAD = ["появилась", "держалась, с", "вид спорта
             "проверить вручную", "BC Game", "Polymarket"]
 
 
+def whole(x: float) -> int:
+    """Ставка в BC Game — целые доллары, не меньше одного (округление по правилам арифметики)."""
+    return max(1, int(x + 0.5))
+
+
 def label(key: tuple, ev: Event) -> str:
     team = {"c1": ev.c1, "c2": ev.c2, "draw": "ничья"}
     k = key[0]
@@ -59,11 +64,14 @@ def to_dict(c, bank: float, asks: list) -> dict | None:
     when = time.strftime("%d.%m %H:%M", time.localtime(bc.start))
     if bc.live:
         when = "лайв " + " / ".join(x for x in (bc.info, c.pm.info) if x)
+    # ставки BC — целые доллары; акций Polymarket — на меньшую из выплат BC
+    stakes = [whole(shares / bc.odds[l]) for l in c.legs]
+    shares = int(min(st * bc.odds[l] for st, l in zip(stakes, c.legs)) * 100) / 100
     legs = [{"site": "BC Game", "what": label(l, bc), "k": bc.odds[l],
-             "price": f"кф {bc.odds[l]:g}", "stake": shares / bc.odds[l]} for l in c.legs]
+             "price": f"кф {bc.odds[l]:g}", "stake": st} for st, l in zip(stakes, c.legs)]
     legs.append({"site": "Polymarket", "what": label(c.key, bc), "k": 1 / cost,
                  "price": f"цена {price:.3f} (кф {1 / cost:.3f} с комиссией)",
-                 "stake": shares * cost})
+                 "stake": shares * cost, "shares": shares})
     volume = (f"Объём по стакану: до ${arb.total_stake:,.0f}, прибыль до ${arb.profit_usd:,.2f}"
               if arb else f"На лучшей цене доступно {asks[0][1]:,.0f} акций")
     ep = c.episode
@@ -91,7 +99,9 @@ def text(d: dict) -> str:
         out.append(f"   [!] матч сопоставлен по одной команде — убедитесь, что это он: "
                    f"на Polymarket «{d['pm_match']}»")
     for leg in d["legs"]:
-        out.append(f"   {leg['site']:<10} {leg['what']:<40} {leg['price']:<38} ${leg['stake']:,.2f}")
+        amt = (f"{leg['shares']:g} акций ≈ ${leg['stake']:,.2f}" if "shares" in leg
+               else f"${leg['stake']:,.0f}")
+        out.append(f"   {leg['site']:<10} {leg['what']:<40} {leg['price']:<38} {amt}")
     out.append(f"   {d['volume']}")
     out.append(f"   {d['question']}")
     out.append(f"   {d['bc_url']}\n   {d['pm_url']}")

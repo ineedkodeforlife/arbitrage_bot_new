@@ -168,6 +168,12 @@ class PmParse(unittest.TestCase):
                          ("Team Liquid", "LGD Gaming"))
 
 
+class WholeStakes(unittest.TestCase):
+    def test_round(self):
+        from arb.view import whole
+        self.assertEqual([whole(x) for x in (52.49, 52.5, 0.2, 7.0)], [52, 53, 1, 7])
+
+
 class Ws(unittest.TestCase):
     def test_frames(self):
         from arb.ws import WebSocket

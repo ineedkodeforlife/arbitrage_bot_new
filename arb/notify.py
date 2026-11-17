@@ -21,7 +21,9 @@ def message(d: dict) -> str:
     if d["weak"]:
         lines.append(f"[!] матч сопоставлен по одной команде, на Polymarket: {d['pm_match']}")
     for leg in d["legs"]:
-        lines.append(f"{leg['site']}: {leg['what']} — {leg['price']} — ${leg['stake']:,.2f}")
+        amt = (f"{leg['shares']:g} акций ≈ ${leg['stake']:,.2f}" if "shares" in leg
+               else f"${leg['stake']:,.0f}")
+        lines.append(f"{leg['site']}: {leg['what']} — {leg['price']} — {amt}")
     lines += [d["volume"], d["bc_url"], d["pm_url"]]
     return "\n".join(lines)
 
